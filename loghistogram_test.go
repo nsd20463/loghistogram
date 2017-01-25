@@ -41,6 +41,20 @@ func TestOutliers(t *testing.T) {
 	}
 }
 
+func TestEmptyHistogram(t *testing.T) {
+	h := New(0, 1, 10)
+	p := h.Percentile(50)
+	if !math.IsNaN(p) {
+		t.Error("Percentile() of empty histogram != NaN")
+	}
+	ps := h.Percentiles(0, 100)
+	for _, p := range ps {
+		if !math.IsNaN(p) {
+			t.Error("Percentiles() of empty histogram != NaN")
+		}
+	}
+}
+
 func TestSubtract(t *testing.T) {
 	h := New(0, 10, 100)
 	h.Accumulate(1)
