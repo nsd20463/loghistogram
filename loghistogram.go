@@ -116,11 +116,12 @@ func (h *Histogram) HighOutliers() uint64 {
 	return atomic.LoadUint64(&h.high_outliers)
 }
 
-// Percentiles returns the values at each percentile. Nan is returned if Count is 0 or percentiles are outside the 0...100 range.
+// Percentiles returns the values at each percentile. NaN is returned if Count is 0 or percentiles are outside the 0...100 range.
 // pers argument MUST be sorted low-to-high. NOTE outliers are taken into account as best we can, so the results can be outside
 // of low...high if the percentile requested lies within the outliers.
 func (h *Histogram) Percentiles(pers ...float64) []float64 {
-	if len(pers) == 0 { // check for stupid args
+	// check for stupid args
+	if len(pers) == 0 {
 		return nil
 	}
 
@@ -142,6 +143,9 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 		// (the log-sized buckets can make the outliers efficient, even if there aren't a lot of them)
 		a := atomic.LoadUint64(&h.low_outliers) + atomic.LoadUint64(&h.n)
 		n := a + +atomic.LoadUint64(&h.low_outliers)
+		if n == 0 {
+			goto return_nans
+		}
 		nf := float64(n)
 		i := len(h.counts) - 1
 		for j := len(pers) - 1; j >= 0; j-- {
@@ -157,6 +161,9 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 		// find the percentiles from low to high
 		a := atomic.LoadUint64(&h.low_outliers)
 		n := a + atomic.LoadUint64(&h.n) + atomic.LoadUint64(&h.high_outliers)
+		if n == 0 {
+			goto return_nans
+		}
 		nf := float64(n)
 		i := 0
 		middle_bucket := len(h.counts) / 2
@@ -174,6 +181,13 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 		}
 	}
 
+	return values
+
+return_nans:
+	nan := math.NaN()
+	for i := range values {
+		values[i] = nan
+	}
 	return values
 }
 
