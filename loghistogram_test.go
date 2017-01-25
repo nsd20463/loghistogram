@@ -21,7 +21,7 @@ func TestAccumulate(t *testing.T) {
 }
 
 func TestOutliers(t *testing.T) {
-	h.New(-10, 10, 10)
+	h := New(-10, 10, 10)
 	h.Accumulate(-10.0001)
 	h.Accumulate(-99)
 	h.Accumulate(10.0001)
@@ -41,16 +41,16 @@ func TestSubtract(t *testing.T) {
 	if h.Count() != 2 {
 		t.Error("Count", h.Count())
 	}
-	if h.Percentiles(50) != 4.5 {
-		t.Error("median", h.Percentiles(50))
+	if h.Percentile(50) != 4.5 {
+		t.Error("median", h.Percentile(50))
 	}
 
 	h.Sub(h2)
 	if h.Count() != 1 {
 		t.Error("Count", h.Count())
 	}
-	if h.Percentiles(50) != 5 {
-		t.Error("median", h.Percentiles(50))
+	if h.Percentile(50) != 5 {
+		t.Error("median", h.Percentile(50))
 	}
 }
 
@@ -69,7 +69,7 @@ func BenchmarkSinglePercentile(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		h.Percentiles(50)
+		h.Percentile(50)
 	}
 }
 
