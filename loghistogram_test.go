@@ -1,21 +1,29 @@
 package loghistogram
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestAccumulate(t *testing.T) {
-	h := New(0, 10, 10)
-	for i := float64(0); i <= 10; i++ {
+	h := New(0, 100, 1000)
+	for i := float64(0); i <= 100; i++ {
 		h.Accumulate(i)
 	}
 
-	if h.Count() != 11 {
+	if h.Outliers() != 0 {
+		t.Errorf("h.Outliers() %d != 0", h.Outliers())
+	}
+	if h.Count() != 101 {
 		t.Errorf("h.Count %d != 11", h.Count())
 	}
 
-	pers := h.Percentiles(0, 50, 90, 99, 100)
-	for i, e := range []float64{0, 5, 9, 9, 10} {
+	pers := []float64{0, 50, 90, 99, 100}
+	vals := h.Percentiles(pers...)
+	t.Logf("vals = %f\n", vals)
+	for i, e := range []float64{0, 50, 90, 99, 100} {
 		if pers[i] != e {
-			t.Errorf("percentile[%d] %v != %v", i, pers[i], e)
+			t.Errorf("percentile[%v (%v%%)] %v != %v", i, pers[i], vals[i], e)
 		}
 	}
 }
@@ -35,22 +43,30 @@ func TestOutliers(t *testing.T) {
 
 func TestSubtract(t *testing.T) {
 	h := New(0, 10, 100)
+	h.Accumulate(1)
+	h.Accumulate(2)
+	h.Accumulate(3)
 	h.Accumulate(4)
 	h2 := h.Dup()
-	h.Accumulate(5)
-	if h.Count() != 2 {
+	h.Accumulate(7)
+	h.Accumulate(8)
+	h.Accumulate(9)
+	if h.Count() != 7 {
 		t.Error("Count", h.Count())
 	}
-	if h.Percentile(50) != 4.5 {
-		t.Error("median", h.Percentile(50))
-	}
+	p1 := h.Percentile(50)
 
+	t.Logf("h = %+v\n", h)
+	t.Logf("h2 = %+v\n", h2)
 	h.Sub(h2)
-	if h.Count() != 1 {
+	t.Logf("h-h2 = %+v\n", h)
+
+	if h.Count() != 3 {
 		t.Error("Count", h.Count())
 	}
-	if h.Percentile(50) != 5 {
-		t.Error("median", h.Percentile(50))
+	p2 := h.Percentile(50)
+	if p1 == p2 || p1 > p2 {
+		t.Error("median before", p1, ", after sub", p2)
 	}
 }
 
@@ -62,7 +78,37 @@ func BenchmarkAccumulate(b *testing.B) {
 	}
 }
 
-func BenchmarkSinglePercentile(b *testing.B) {
+func BenchmarkRaceyAccumulate(b *testing.B) {
+	h := New(0, 10000000, 1000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.raceyAccumulate(float64(i))
+	}
+}
+
+func BenchmarkSingle10thPercentile(b *testing.B) {
+	h := New(0, 10000, 1000)
+	for i := 0; i < 10000; i += 10 {
+		h.Accumulate(float64(i))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.Percentile(10)
+	}
+}
+
+func BenchmarkSingle25thPercentile(b *testing.B) {
+	h := New(0, 10000, 1000)
+	for i := 0; i < 10000; i += 10 {
+		h.Accumulate(float64(i))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.Percentile(25)
+	}
+}
+
+func BenchmarkSingle50thPercentile(b *testing.B) {
 	h := New(0, 10000, 1000)
 	for i := 0; i < 10000; i += 10 {
 		h.Accumulate(float64(i))
@@ -73,6 +119,28 @@ func BenchmarkSinglePercentile(b *testing.B) {
 	}
 }
 
+func BenchmarkSingle75thPercentile(b *testing.B) {
+	h := New(0, 10000, 1000)
+	for i := 0; i < 10000; i += 10 {
+		h.Accumulate(float64(i))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.Percentile(75)
+	}
+}
+
+func Benchmark2Percentiles(b *testing.B) {
+	h := New(0, 10000, 1000)
+	for i := 0; i < 10000; i += 10 {
+		h.Accumulate(float64(i))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.Percentiles(25, 50)
+	}
+}
+
 func Benchmark3Percentiles(b *testing.B) {
 	h := New(0, 10000, 1000)
 	for i := 0; i < 10000; i += 10 {
@@ -80,7 +148,29 @@ func Benchmark3Percentiles(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		h.Percentiles(25, 50, 75)
+		h.Percentiles(25, 33, 50)
+	}
+}
+
+func Benchmark4Percentiles(b *testing.B) {
+	h := New(0, 10000, 1000)
+	for i := 0; i < 10000; i += 10 {
+		h.Accumulate(float64(i))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.Percentiles(10, 25, 33, 50)
+	}
+}
+
+func Benchmark75thPercentile(b *testing.B) {
+	h := New(0, 10000, 1000)
+	for i := 0; i < 10000; i += 10 {
+		h.Accumulate(float64(i))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.Percentiles(75)
 	}
 }
 
@@ -92,5 +182,23 @@ func Benchmark99thPercentile(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		h.Percentiles(99)
+	}
+}
+
+func BenchmarkLog10(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		math.Log10(float64(i + 1))
+	}
+}
+
+func BenchmarkLog2(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		math.Log2(float64(i + 1))
+	}
+}
+
+func BenchmarkLog(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		math.Log(float64(i + 1))
 	}
 }
