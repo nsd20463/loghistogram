@@ -3,6 +3,7 @@ package loghistogram
 import (
 	"math"
 	"testing"
+	"unsafe"
 )
 
 func TestAccumulate(t *testing.T) {
@@ -216,5 +217,27 @@ func BenchmarkLog2(b *testing.B) {
 func BenchmarkLog(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		math.Log(float64(i + 1))
+	}
+}
+
+func BenchmarkFloatBits(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		f := float64(i)
+		f2 := math.Float64frombits(math.Float64bits(f))
+		if f != f2 {
+			b.Error(f, "!=", f2)
+			break
+		}
+	}
+}
+func BenchmarkFloatCast(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		f := float64(i)
+		n := *(*uint64)(unsafe.Pointer(&f))
+		f2 := *(*float64)(unsafe.Pointer(&n))
+		if f != f2 {
+			b.Error(f, "!=", f2)
+			break
+		}
 	}
 }
