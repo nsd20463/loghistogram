@@ -11,8 +11,9 @@ func TestAccumulate(t *testing.T) {
 		h.Accumulate(i)
 	}
 
-	if h.Outliers() != 0 {
-		t.Errorf("h.Outliers() %d != 0", h.Outliers())
+	lo, hi := h.Outliers()
+	if (lo | hi) != 0 {
+		t.Errorf("h.Outliers() %d,%d != 0", lo, hi)
 	}
 	if h.Count() != 101 {
 		t.Errorf("h.Count %d != 11", h.Count())
@@ -36,8 +37,9 @@ func TestOutliers(t *testing.T) {
 	if h.Count() != 0 {
 		t.Error("Count", h.Count())
 	}
-	if h.LowOutliers() != 2 || h.HighOutliers() != 1 || h.Outliers() != 3 {
-		t.Error("Outliers", h.LowOutliers(), h.HighOutliers(), h.Outliers())
+	lo, hi := h.Outliers()
+	if lo != 2 || hi != 1 {
+		t.Error("Outliers", lo, hi)
 	}
 }
 

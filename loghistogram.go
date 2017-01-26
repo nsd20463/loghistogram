@@ -105,15 +105,9 @@ func (h *Histogram) raceyAccumulate(x float64) {
 // Count returns the total number of samples accumulated within low...high. outliers are not included
 func (h *Histogram) Count() uint64 { return atomic.LoadUint64(&h.n) }
 
-// Outliers returns the number of outliers (how may samples were outside the low...high bound)
-func (h *Histogram) Outliers() uint64 {
-	return atomic.LoadUint64(&h.low_outliers) + atomic.LoadUint64(&h.high_outliers)
-}
-func (h *Histogram) LowOutliers() uint64 {
-	return atomic.LoadUint64(&h.low_outliers)
-}
-func (h *Histogram) HighOutliers() uint64 {
-	return atomic.LoadUint64(&h.high_outliers)
+// Outliers returns the number of outliers on either side (how may samples were outside the low...high bound)
+func (h *Histogram) Outliers() (uint64, uint64) {
+	return atomic.LoadUint64(&h.low_outliers), atomic.LoadUint64(&h.high_outliers)
 }
 
 // Percentiles returns the values at each percentile. NaN is returned if Count is 0 or percentiles are outside the 0...100 range.
