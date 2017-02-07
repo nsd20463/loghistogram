@@ -14,7 +14,7 @@ package loghistogram
 import (
 	"fmt"
 	"math"
-	"sync/atomic"
+	"sync"
 )
 
 const epsilon = 1E-16 // 1E-16 is chosen because it is close to the ~52 bit limit of a float64 mantissa
@@ -22,6 +22,8 @@ const epsilon = 1E-16 // 1E-16 is chosen because it is close to the ~52 bit limi
 // Histogram is a log-scaled histogram. It holds the accumulated counts
 type Histogram struct {
 	shift, scale float64 // precalculated values
+
+	lock sync.Mutex // lock arbitrating access to counts and  n
 
 	n                        uint64   // total # of accumulated samples in counts[], including outliers at counts[0] and counts[N+1]
 	counts                   []uint64 // buckets of counts + a low and high outlier bucket at [0] and [N+1]
@@ -86,12 +88,13 @@ func (h *Histogram) swap(new_counts []uint64) (old_counts []uint64) {
 func (h *Histogram) Accumulate(x float64) {
 	i := h.valueToBucket(x)
 
-	atomic.AddUint64(&h.counts[i], 1)
-	atomic.AddUint64(&h.n, 1)
+	h.lock.Lock()
+	h.counts[i]++
+	h.n++
+	h.lock.Unlock()
 }
 
-// test to see how much the atomic ops hurt performance
-// (the answer, for the curious, is that the atomic increments cost ~3 ns/Accumulate(), out of 19.8 ns/Accumulate())
+// test to see how much the lock hurts performance
 func (h *Histogram) raceyAccumulate(x float64) {
 	i := h.valueToBucket(x)
 
@@ -100,11 +103,19 @@ func (h *Histogram) raceyAccumulate(x float64) {
 }
 
 // Count returns the total number of samples accumulated, including outliers
-func (h *Histogram) Count() uint64 { return atomic.LoadUint64(&h.n) }
+func (h *Histogram) Count() uint64 {
+	h.lock.Lock()
+	n := h.n
+	h.lock.Unlock()
+	return n
+}
 
 // Outliers returns the number of outliers on either side (how may samples were outside the low...high bound)
 func (h *Histogram) Outliers() (uint64, uint64) {
-	return atomic.LoadUint64(&h.counts[0]), atomic.LoadUint64(&h.counts[len(h.counts)-1])
+	h.lock.Lock()
+	lo, hi := h.counts[0], h.counts[len(h.counts)-1]
+	h.lock.Unlock()
+	return lo, hi
 }
 
 // Percentiles returns the values at each percentile. NaN is returned if Count is 0 or percentiles are outside the 0...100 range.
@@ -128,11 +139,13 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 	// A first good guess is to do it from below, but keeping track of the percentile of the middle
 	// bucket lets us guess properly next time.
 
+	h.lock.Lock()
+
 	if h.middle_bucket_percentile >= 0 && pers[0] > h.middle_bucket_percentile {
 		// find the percentiles from high to low. this can be more efficient when asking for things like the 99% percentile
 		// because we only need to scan over 1% of the counts.
 		// (the log-sized buckets can make the outliers efficient, even if there aren't a lot of them)
-		n := atomic.LoadUint64(&h.n)
+		n := h.n
 		a := n
 		if n == 0 {
 			goto return_nans
@@ -143,7 +156,7 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 			p := pers[j]
 			pn := uint64(p * nf / 100)
 			for a >= pn && i >= 0 {
-				a -= atomic.LoadUint64(&h.counts[i])
+				a -= h.counts[i]
 				i--
 			}
 			values[j] = h.bucketToValue(i)
@@ -151,7 +164,7 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 	} else {
 		// find the percentiles from low to high
 		a := uint64(0)
-		n := atomic.LoadUint64(&h.n)
+		n := h.n
 		if n == 0 {
 			goto return_nans
 		}
@@ -161,7 +174,7 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 		for j, p := range pers {
 			pn := uint64(p * nf / 100)
 			for a < pn && i < len(h.counts) {
-				a += atomic.LoadUint64(&h.counts[i])
+				a += h.counts[i]
 				if i == middle_bucket {
 					// update our estimate of the middle bucket's percentile
 					h.middle_bucket_percentile = 100 * float64(a) / float64(n)
@@ -172,9 +185,11 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 		}
 	}
 
+	h.lock.Unlock()
 	return values
 
 return_nans:
+	h.lock.Unlock()
 	nan := math.NaN()
 	for i := range values {
 		values[i] = nan
@@ -189,53 +204,15 @@ func (h *Histogram) Percentile(per float64) float64 {
 
 // Dup returns a copy of h
 func (h *Histogram) Dup() *Histogram {
+	h.lock.Lock()
 	h2 := *h
 	// we've copied the struct, but of course not the counts slice
 	// so copy that, and while we are at it we need to recompute n, just in case the counts change while we are copying them
 	counts := make([]uint64, len(h.counts))
-	n := uint64(0)
 	for i := range counts {
-		c := atomic.LoadUint64(&h.counts[i])
-		n += c
-		counts[i] = c
+		counts[i] = h.counts[i]
 	}
 	h2.counts = counts
-	h2.n = n
+	h.lock.Unlock()
 	return &h2
-}
-
-// Sub subtracts h2 from h in-place. h -= h2. h and h2 must be the same size or you're subtracting apples from oranges and you'll get garbage
-// Subtracting an earlier copy of the histogram is useful when keeping a running histogram.
-func (h *Histogram) Sub(h2 *Histogram) {
-	if len(h.counts) != len(h2.counts) {
-		panic("subtracting different-sized histograms")
-	}
-	// I could also check the low and high, but that's sometimes useful, so don't
-
-	for i := range h2.counts {
-		c := atomic.LoadUint64(&h2.counts[i])
-		atomic.AddUint64(&h.counts[i], -c)
-		atomic.AddUint64(&h.n, -c) // keep the 'n' as up-to-date as Accumulate does, rather than adjust n once at the end of the loop
-	}
-}
-
-// Sub returns h1-h2 without changing h1 nor h2
-func Sub(h1, h2 *Histogram) *Histogram {
-	if len(h1.counts) != len(h2.counts) {
-		panic("subtracting different-sized histograms")
-	}
-	// I could also check the low and high, but that's sometimes useful, so don't
-
-	h := *h1
-	h.counts = make([]uint64, len(h1.counts))
-	n := uint64(0)
-	for i := range h1.counts {
-		c1 := atomic.LoadUint64(&h1.counts[i])
-		c2 := atomic.LoadUint64(&h2.counts[i])
-		h.counts[i] = c1 - c2
-		n += c1 - c2
-	}
-	h.n = n
-
-	return &h
 }

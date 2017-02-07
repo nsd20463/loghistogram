@@ -58,35 +58,6 @@ func TestEmptyHistogram(t *testing.T) {
 	}
 }
 
-func TestSubtract(t *testing.T) {
-	h := New(0, 10, 100)
-	h.Accumulate(1)
-	h.Accumulate(2)
-	h.Accumulate(3)
-	h.Accumulate(4)
-	h2 := h.Dup()
-	h.Accumulate(7)
-	h.Accumulate(8)
-	h.Accumulate(9)
-	if h.Count() != 7 {
-		t.Error("Count", h.Count())
-	}
-	p1 := h.Percentile(50)
-
-	t.Logf("h = %+v\n", h)
-	t.Logf("h2 = %+v\n", h2)
-	h.Sub(h2)
-	t.Logf("h-h2 = %+v\n", h)
-
-	if h.Count() != 3 {
-		t.Error("Count", h.Count())
-	}
-	p2 := h.Percentile(50)
-	if p1 == p2 || p1 > p2 {
-		t.Error("median before", p1, ", after sub", p2)
-	}
-}
-
 func BenchmarkAccumulate(b *testing.B) {
 	h := New(0, 10000000, 1000)
 	b.ResetTimer()
