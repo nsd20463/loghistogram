@@ -78,12 +78,6 @@ func (h *Histogram) init(low, high float64, num_buckets int) {
 	h.middle_bucket_percentile = -1
 }
 
-func (h *Histogram) swap(new_counts []uint64) (old_counts []uint64) {
-	old_counts = h.counts
-	h.counts = new_counts
-	return old_counts
-}
-
 // Accumulate adds a sample with value x to the histogram
 func (h *Histogram) Accumulate(x float64) {
 	i := h.valueToBucket(x)
@@ -140,7 +134,7 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 	// bucket lets us guess properly next time.
 
 	h.lock.Lock()
-
+	middle_bucket := len(h.counts) / 2
 	if h.middle_bucket_percentile >= 0 && pers[0] > h.middle_bucket_percentile {
 		// find the percentiles from high to low. this can be more efficient when asking for things like the 99% percentile
 		// because we only need to scan over 1% of the counts.
@@ -156,6 +150,10 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 			p := pers[j]
 			pn := uint64(p * nf / 100)
 			for a >= pn && i >= 0 {
+				if i == middle_bucket {
+					// update our estimate of the middle bucket's percentile
+					h.middle_bucket_percentile = 100 * float64(a) / float64(n)
+				}
 				a -= h.counts[i]
 				i--
 			}
@@ -170,15 +168,14 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 		}
 		nf := float64(n)
 		i := 0
-		middle_bucket := len(h.counts) / 2
 		for j, p := range pers {
 			pn := uint64(p * nf / 100)
 			for a < pn && i < len(h.counts) {
-				a += h.counts[i]
 				if i == middle_bucket {
 					// update our estimate of the middle bucket's percentile
 					h.middle_bucket_percentile = 100 * float64(a) / float64(n)
 				}
+				a += h.counts[i]
 				i++
 			}
 			values[j] = h.bucketToValue(i)
@@ -200,19 +197,4 @@ return_nans:
 // Percentile calculates one percentile
 func (h *Histogram) Percentile(per float64) float64 {
 	return h.Percentiles(per)[0]
-}
-
-// Dup returns a copy of h
-func (h *Histogram) Dup() *Histogram {
-	h.lock.Lock()
-	h2 := *h
-	// we've copied the struct, but of course not the counts slice
-	// so copy that, and while we are at it we need to recompute n, just in case the counts change while we are copying them
-	counts := make([]uint64, len(h.counts))
-	for i := range counts {
-		counts[i] = h.counts[i]
-	}
-	h2.counts = counts
-	h.lock.Unlock()
-	return &h2
 }
