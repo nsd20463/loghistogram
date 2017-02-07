@@ -192,10 +192,10 @@ func (h *Histogram) Dup() *Histogram {
 	h2 := *h
 	// we've copied the struct, but of course not the counts slice
 	// so copy that, and while we are at it we need to recompute n, just in case the counts change while we are copying them
-	counts := make([]uint64, len(h2.counts))
+	counts := make([]uint64, len(h.counts))
 	n := uint64(0)
 	for i := range counts {
-		c := atomic.LoadUint64(&h2.counts[i])
+		c := atomic.LoadUint64(&h.counts[i])
 		n += c
 		counts[i] = c
 	}
