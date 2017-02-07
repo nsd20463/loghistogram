@@ -35,7 +35,7 @@ func TestOutliers(t *testing.T) {
 	h.Accumulate(-10.0001)
 	h.Accumulate(-99)
 	h.Accumulate(10.0001)
-	if h.Count() != 0 {
+	if h.Count() != 3 {
 		t.Error("Count", h.Count())
 	}
 	lo, hi := h.Outliers()

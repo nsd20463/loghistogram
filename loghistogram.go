@@ -21,26 +21,31 @@ const epsilon = 1E-16 // 1E-16 is chosen because it is close to the ~52 bit limi
 
 // Histogram is a log-scaled histogram. It holds the accumulated counts
 type Histogram struct {
-	low, high    float64 // the low and high bounds of the histogram (set when created)
 	shift, scale float64 // precalculated values
 
-	n                           uint64   // total # of accumulated samples in counts[]. does NOT include outliers
-	counts                      []uint64 // buckets of counts
-	low_outliers, high_outliers uint64   // counts of <low and >high outliers
-	middle_bucket_percentile    float64  // guess (crude approximation) of the percentile of the values are in the first len(counts)/2 buckets, or -1 if it isn't yet guesses
+	n                        uint64   // total # of accumulated samples in counts[], including outliers at counts[0] and counts[N+1]
+	counts                   []uint64 // buckets of counts + a low and high outlier bucket at [0] and [N+1]
+	middle_bucket_percentile float64  // guess (crude approximation) of the percentile of the values are in the first len(counts)/2 buckets, or -1 if it isn't yet guesses
 }
 
-// map from a value to a bucket index in h.counts. returns indexes <0 and >= len(h.counts) to indicate outliers
+// map from a value to a bucket index in h.counts. returns indexes 0 and = len(h.counts-1) for outliers
 func (h *Histogram) valueToBucket(value float64) int {
 	v := value - h.shift
-	if v < 1 {
-		return -1
+	if v < 1.0 {
+		return 0
 	}
-	b := math.Log(v) * h.scale // benchmarks on amd64 & go1.7 show math.Log is slightly faster than math.Log10 and much faster than math.Log2
-	return int(b)
+
+	b := 1 + int(math.Log(v)*h.scale) // benchmarks on amd64 & go1.7 show math.Log is slightly faster than math.Log10 and much faster than math.Log2
+
+	if b >= len(h.counts) {
+		b = len(h.counts) - 1
+	}
+
+	return b
 }
 
 // map from a bucket index into h.counts to the lower bound of values which map to that bucket
+// if the bucket is an outlier then the result is not well defined, except that it will be outside the low,high range
 func (h *Histogram) bucketToValue(bucket int) float64 {
 	v := math.Exp(float64(bucket)/h.scale) + h.shift
 	return v
@@ -48,42 +53,41 @@ func (h *Histogram) bucketToValue(bucket int) float64 {
 
 // New constructs a histogram to hold values between low and high using the given number of buckets
 func New(low, high float64, num_buckets int) *Histogram {
+	h := &Histogram{}
+	h.init(low, high, num_buckets)
+	return h
+}
+
+func (h *Histogram) init(low, high float64, num_buckets int) {
 	// check for nonsense arguments from broken callers
 	if high < low || num_buckets <= 0 {
 		panic(fmt.Sprintf("loghistogram.New(%v, %v, %v): invalid arguments", low, high, num_buckets))
 	}
 
-	// we want log(low-shift) to be 0, and log(high-shift)*scale = num_buckets-epsilon (so it falls inside the last bucket and not right on the edge)
+	// we want log(low-shift) to be 0, and log(high-shift)*scale = num_buckets+1-epsilon (so it falls inside the last bucket and not right on the edge)
 	// so low-shift = 1, or
 	shift := low - 1
 	// and then
 	scale := float64(num_buckets) * (1 - epsilon) / math.Log(high-shift)
 
-	h := &Histogram{
-		counts: make([]uint64, num_buckets),
-		low:    low,
-		high:   high,
-		shift:  shift,
-		scale:  scale,
-		middle_bucket_percentile: -1,
-	}
+	h.counts = make([]uint64, 2+num_buckets)
+	h.shift = shift
+	h.scale = scale
+	h.middle_bucket_percentile = -1
+}
 
-	return h
+func (h *Histogram) swap(new_counts []uint64) (old_counts []uint64) {
+	old_counts = h.counts
+	h.counts = new_counts
+	return old_counts
 }
 
 // Accumulate adds a sample with value x to the histogram
 func (h *Histogram) Accumulate(x float64) {
 	i := h.valueToBucket(x)
 
-	// outliers are accumulated separately just so we know they existed
-	if i < 0 {
-		atomic.AddUint64(&h.low_outliers, 1)
-	} else if i >= len(h.counts) {
-		atomic.AddUint64(&h.high_outliers, 1)
-	} else {
-		atomic.AddUint64(&h.counts[i], 1)
-		atomic.AddUint64(&h.n, 1)
-	}
+	atomic.AddUint64(&h.counts[i], 1)
+	atomic.AddUint64(&h.n, 1)
 }
 
 // test to see how much the atomic ops hurt performance
@@ -91,23 +95,16 @@ func (h *Histogram) Accumulate(x float64) {
 func (h *Histogram) raceyAccumulate(x float64) {
 	i := h.valueToBucket(x)
 
-	// outliers are accumulated separately just so we know they existed
-	if i < 0 {
-		h.low_outliers++
-	} else if i >= len(h.counts) {
-		h.high_outliers++
-	} else {
-		h.counts[i]++
-		h.n++
-	}
+	h.counts[i]++
+	h.n++
 }
 
-// Count returns the total number of samples accumulated within low...high. outliers are not included
+// Count returns the total number of samples accumulated, including outliers
 func (h *Histogram) Count() uint64 { return atomic.LoadUint64(&h.n) }
 
 // Outliers returns the number of outliers on either side (how may samples were outside the low...high bound)
 func (h *Histogram) Outliers() (uint64, uint64) {
-	return atomic.LoadUint64(&h.low_outliers), atomic.LoadUint64(&h.high_outliers)
+	return atomic.LoadUint64(&h.counts[0]), atomic.LoadUint64(&h.counts[len(h.counts)-1])
 }
 
 // Percentiles returns the values at each percentile. NaN is returned if Count is 0 or percentiles are outside the 0...100 range.
@@ -135,8 +132,8 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 		// find the percentiles from high to low. this can be more efficient when asking for things like the 99% percentile
 		// because we only need to scan over 1% of the counts.
 		// (the log-sized buckets can make the outliers efficient, even if there aren't a lot of them)
-		a := atomic.LoadUint64(&h.low_outliers) + atomic.LoadUint64(&h.n)
-		n := a + +atomic.LoadUint64(&h.low_outliers)
+		n := atomic.LoadUint64(&h.n)
+		a := n
 		if n == 0 {
 			goto return_nans
 		}
@@ -153,8 +150,8 @@ func (h *Histogram) Percentiles(pers ...float64) []float64 {
 		}
 	} else {
 		// find the percentiles from low to high
-		a := atomic.LoadUint64(&h.low_outliers)
-		n := a + atomic.LoadUint64(&h.n) + atomic.LoadUint64(&h.high_outliers)
+		a := uint64(0)
+		n := atomic.LoadUint64(&h.n)
 		if n == 0 {
 			goto return_nans
 		}
