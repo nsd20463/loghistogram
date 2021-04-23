@@ -80,19 +80,15 @@ func (h *Histogram) init(low, high float64, num_buckets int) {
 
 // Accumulate adds a sample with value x to the histogram
 func (h *Histogram) Accumulate(x float64) {
-	i := h.valueToBucket(x)
-
 	h.lock.Lock()
-	h.counts[i]++
+	h.counts[h.valueToBucket(x)]++
 	h.n++
 	h.lock.Unlock()
 }
 
 // test to see how much the lock hurts performance
 func (h *Histogram) raceyAccumulate(x float64) {
-	i := h.valueToBucket(x)
-
-	h.counts[i]++
+	h.counts[h.valueToBucket(x)]++
 	h.n++
 }
 
